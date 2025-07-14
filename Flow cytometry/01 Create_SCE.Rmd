@@ -1,0 +1,120 @@
+---
+title: "Create SCE Object for Flow analysis kinetics"
+author: "TheVeger"
+date: "14/07/2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+
+# Libraries
+Load libraries required for workflow. 
+```{r libs, message = FALSE}
+library(tidyverse)
+library(SingleCellExperiment)
+library(CATALYST) # Key package during unsupervised analysis and DA & DS analysis
+library(flowCore)
+library(readxl)
+library(rasterpdf)
+library(openxlsx)
+library(readxl)
+```
+
+
+# Set paths
+```{r set paths, warning=FALSE}
+rm(list = ls())
+
+path.data <- "../Data/"
+path.files <- "../R_files/"
+path.out <- "../R_out/"
+
+source("flow_functions.R")
+```
+
+
+# Create Meta
+This chunk creates the meta data from the file names (list.files())
+```{r create meta, warning=FALSE}
+md <- data.frame("file_name" = list.files(path.data, pattern = "fcs$"), "file_path" = list.files(path.data, pattern = "fcs$", full.names = TRUE))
+
+md <- md %>% 
+  separate(file_name, c("export", "Organ","well", "condition", "timepoint", "number", "year", "month", "day", "hour", "minute", "second", "fcs"), remove = FALSE) %>%
+  dplyr::select(file_name, condition, timepoint, number, year, month, day, file_path)
+
+write.xlsx(x = md, file = paste0(path.data, "md.xlsx"), sheetName = "meta_data")
+cellcounts <- readRDS(paste0(path.data,"cellcounts.rds")) 
+md <- merge(md, cellcounts, by = "sample_id")
+md
+# This sample was removed because there was no bacterial growth at d1 p.i.; making it a clear outlier as all other mice at d1 p.i should at least have >10^4 CFU
+md <- md %>% dplyr::filter(sample_id != "Bladder_CTRL_d1_2024_01_24_6")
+```
+
+# Read .fcs files
+Here, we read the .fcs files as a flow set and downsample to 2000 cells per sample.
+Next, we convert the flow set to an SCE object (prepData()) and transform with cofactor 6000.
+To save time, I saved the resulting SCE object. It is imported again in the next chunk.
+```{r read flowset}
+fs <- read.flowSet(md$file_path, transformation = FALSE, truncate_max_range = FALSE) #Change md$norm_file_path to reflect the location of your .fcs files.
+
+# Apply the updated function to each fcs file in the flowSet
+fs <- fsApply(fs, function(fr) {
+  current_marker_names <- markernames(fr)
+  new_marker_names <- sapply(current_marker_names, standardize_marker_names)
+  markernames(fr) <- new_marker_names
+  fr
+})
+
+fsApply(fs, nrow) %>% head(70)
+fs.ds <- downsample(fs, n = 2000)
+fsApply(fs.ds, nrow) %>% head(25)
+```
+
+# Create panel
+Next, we create a data frame containing information about our flow panel.
+```{r create panel}
+panel <- as.data.frame(markernames(fs))
+panel <- panel %>% 
+  dplyr::rename("antigen" = `markernames(fs)`) %>%
+  rownames_to_column("channel") %>%
+  mutate("marker_class" = "none") #Create the column indicating which markers are used for the clustering
+```
+
+# Create Single Cell Experiment (SCE) object
+Now, we have all the parts required to create a Single Cell Experiment (SCE). We use the prepData function from CATALYST to compile the object from the flow set, the meta data and the panel. CATALYST expects certain column names in each of the last two data frames. Sometimes we have those columns, otherwise we can indicate which columns we want to have in our SCE object as shown below.
+
+This example assumes that the files were already arcsine transformed during the CytoNorm workflow and don't need to be transformed again. If you didn't transform your files yet, set "transform = TRUE". For spectral flow data (e.g. cytek), keep co-factor 6000, for non-spectral flow data (e.g fortessa) set "cofactor = 150"
+```{r create SCE}
+sce <- prepData(x = fs.ds, md = md, panel = panel,
+                panel_cols = list(channel = "channel", antigen = "antigen", class = "marker_class"),
+                md_cols = list(file = "file_name", id = "sample_id", factors = c("condition", "timepoint", "number")),
+                transform = TRUE, cofactor = 6000, FACS = TRUE)
+unique(sce@colData$sample_id)
+#Add channel and cell identifier
+colData(sce)$cell_id <- 1:nrow(colData(sce))
+rowData(sce)$channel_id <- 1:nrow(rowData(sce))
+sce$timepoint <- factor(sce$timepoint, levels= c("H" , "d1", "d3", "d7", "d14", "d21", "d29"))
+```
+
+
+# Health check of the SCE object
+```{r health check SCE}
+colData(sce)
+rowData(sce)
+ei(sce)
+assay(sce)[1:10, 1:10]
+plotCounts(sce,
+    group_by = "sample_id")
+plotScatter(sce, c("TCRb chain", "CD19"))
+plotScatter(sce, c("CD4", "CD8"))
+```
+
+
+```{r save SCE}
+#Save SCE object
+saveRDS(sce, file = paste0(path.files, "01_SCE.rds"))
+```
+

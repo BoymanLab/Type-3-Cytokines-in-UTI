@@ -1,0 +1,317 @@
+---
+title: "Plots of Unsupervised Flow Data Analysis Kinetics"
+author: "TheVeger"
+date: "14/07/2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+# Libraries
+```{r libs, message = FALSE}
+library(tidyverse)
+library(SingleCellExperiment)
+library(readxl)
+library(clustree)
+library(MetBrewer)
+library(ggpubr)
+library(rstatix) #do statistics for plots
+library(pals)
+library(openxlsx)
+library(CATALYST)
+library(ConsensusClusterPlus)
+library(flowCore)
+library(ggrepel)
+library(scater)
+library(rasterpdf)
+library(scales) #add percentages
+```
+
+# Set paths
+```{r set paths, warning=FALSE}
+rm(list = ls())
+
+path.data <- "../Data/"
+path.files <- "../R_files/"
+path.out <- "../R_out/"
+
+H <- met.brewer("Kandinsky",n=20)[c(16)]
+d1 <- met.brewer("Archambault",n=7)[c(3)]
+d3 <- met.brewer("Kandinsky",n=20)[c(2)]
+d7 <- met.brewer("Kandinsky",n=20)[c(7)]
+d14 <- met.brewer("Archambault",n=7)[c(4)]
+d21 <- met.brewer("Archambault",n=7)[c(5)]
+d28 <- met.brewer("Archambault",n=20)[c(2)]
+
+colvec <- c(H, d1, d3, d7, d14, d21, d28)
+
+Treatment <- met.brewer("Navajo",n=20)[c(15)]
+Treatment2 <- met.brewer("Navajo",n=20)[c(1)]
+source("flow_functions.R")
+```
+
+# Prepare SCE
+## Import SCE object
+
+Import SCE object that we have saved previously.
+```{r load and coldata}
+sce <- readRDS(file = paste0(path.files, "SCE_all_merged.rds"))
+```
+
+## DA visualisation
+
+# Data preperation
+```{r DA}
+sce$timepoint <- factor(sce$timepoint, levels = c("H", "d1", "d3","d7", "d14", "d21", "d29"))
+
+```
+
+# Density
+```{r}
+pdf(paste0(path.out, "DensityPlots.pdf"), height = 6, width = 6, onefile = TRUE)
+plot_density(x = sce, color_by = "timepoint", ncol =2, colvec = colvec, bins = 12, xlim = c(-13, 13.5), ylim = c(-17, 18), contures = 1)+
+  theme(legend.position = "none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        strip.text = element_blank())
+dev.off()
+```
+
+# LiveCD45 plots
+```{r}
+LiveCD45 <- readRDS(paste0(path.files, "LiveCD45Counts.rds"))
+LiveCD45 <- LiveCD45 %>% dplyr::filter(!((sample_id == "Bladder_CTRL_d1_2024_01_24_5" | sample_id == "Bladder_CTRL_d1_2024_01_24_7")))
+LiveCD45$Timepoint <- factor(LiveCD45$Timepoint, levels = c("H", "d1", "d3","d7", "d14", "d21", "d29"))
+LiveCD45 <- LiveCD45 %>% mutate(LogMeasurement = log(LiveCD45))
+LiveCD45 <- LiveCD45 %>% mutate("% of Single Cells" = LiveCD45/`Single Cells`)
+
+stat.test <- LiveCD45 %>%
+    group_by("Timepoint") %>%
+    t_test(LiveCD45 ~ Timepoint, ref.group = "H") %>%
+    add_significance("p")
+  stat.test
+  stat.test <- stat.test %>%
+    add_xy_position(x = "Timepoint", dodge = 0.75, fun = "max", scales = "free", step.increase = 0)%>%
+    dplyr::filter(p != "NaN") %>% mutate("y.position" = y.position*1.05)
+
+pdf(paste0(path.out,format(Sys.Date(), "%Y%m%d"),"_","LiveCD45Count.pdf"), onefile = TRUE, width = 5.333, height = 3)
+ggplot(LiveCD45, aes(x = Timepoint, y = LiveCD45, interaction(Timepoint)))+
+    geom_boxplot(color = "black", fill = Treatment2, alpha = 0.5, width = 0.25, outlier.shape = NA)+
+    stat_summary(fun=median, geom="line", aes(group=1), color = "black")  + 
+    geom_point(color = Treatment2, fill = Treatment2,
+               position = position_jitter(width = 0.1), # Jitter points
+               alpha = 0.5, size = 2, shape = 16) +
+    scale_y_log10(expand = expansion(mult = 0.1))+
+    stat_pvalue_manual(stat.test,  label = "p", tip.length = 0.02, hide.ns = FALSE, remove.bracket = TRUE)+
+    theme_bw()+
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.line = element_line(color = "black"),
+          panel.spacing = unit(0, "lines"),
+          strip.background = element_blank(),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(size =18 , face= "bold", color = "black"),
+          axis.text.y = element_text(size =13, color = "black"),
+          axis.title.y = element_text(size =20 , face= "bold", color = "black"),
+          legend.position = "none",
+          strip.text = element_text(size = 18, face = "bold"))+
+    labs(y = "Count LiveCD45")+
+    scale_fill_manual(values = colvec)+
+    scale_color_manual(values = colvec)
+dev.off()
+
+stat.test <- LiveCD45 %>%
+    group_by("Timepoint") %>%
+    t_test(`% of Single Cells` ~ Timepoint, ref.group = "H") %>%
+    add_significance("p")
+  stat.test
+  stat.test <- stat.test %>%
+    add_xy_position(x = "Timepoint", dodge = 0.75, fun = "max", scales = "free", step.increase = 0)%>%
+    dplyr::filter(p != "NaN") %>% mutate("y.position" = y.position*1.05)
+
+pdf(paste0(path.out,format(Sys.Date(), "%Y%m%d"),"_","LiveCD45PercentofSingleCells.pdf"), onefile = TRUE, width = 5.333, height = 3)
+ggplot(LiveCD45, aes(x = Timepoint, y = `% of Single Cells`, interaction(Timepoint)))+
+    geom_boxplot(color = "black", fill = Treatment, alpha = 0.5, width = 0.25, outlier.shape = NA)+
+    stat_summary(fun=median, geom="line", aes(group=1), color = "black")  + 
+    geom_point(color = Treatment, fill = Treatment,
+               position = position_jitter(width = 0.1), # Jitter points
+               alpha = 0.5, size = 2, shape = 16) +
+    scale_y_continuous(labels = percent, expand = expansion(mult = 0.1)) +
+    stat_pvalue_manual(stat.test,  label = "p", tip.length = 0.02, hide.ns = FALSE, remove.bracket = TRUE)+
+    theme_bw()+
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.line = element_line(color = "black"),
+          panel.spacing = unit(0, "lines"),
+          strip.background = element_blank(),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(size =18 , face= "bold", color = "black"),
+          axis.text.y = element_text(size =18, color = "black"),
+          axis.title.y = element_text(size =20 , face= "bold", color = "black"),
+          legend.position = "none",
+          strip.text = element_text(size = 18, face = "bold"))+
+    labs(y = "LiveCD45 % of Single Cells")+
+    scale_fill_manual(values = colvec)+
+    scale_color_manual(values = colvec)
+dev.off()
+```
+# Plotting single populations
+```{r}
+Fig1 <- calculate_DA(sce, cluster_colum = "cluster", sample_id = "sample_id", condition = NULL)
+Fig1$Freq <- as.double(Fig1$Freq)
+cellcounts <- readRDS(paste0(path.files,"cellcounts.rds"))
+Fig1 <- Fig1 %>% left_join(cellcounts, by = "sample_id")
+Fig1 <- Fig1 %>% mutate("count" = ((Freq*LiveCD45)/Count)*10^6*20*0.4)
+# Neutrophils of d1 from 20240124 were removed, as they were all dead. This is likely due to the new batch of Liberase Tm that I used in the first timepoints, which was much stronger that the previous lot. Therefore, at d21 p.i. of the second repitition of the kinetics, I changed the concentration of Liberase Tm. 
+Fig1 <- Fig1 %>% dplyr::filter(!((sample_id == "Bladder_CTRL_d1_2024_01_24_5" | sample_id == "Bladder_CTRL_d1_2024_01_24_7") & cluster == "Neutrophils"))
+write.xlsx(x = Fig1, file = paste0(path.files, "Fig1.xlsx"), sheetName = "data", rownames = FALSE)
+Th <- Fig1[grepl("Th|Treg", Fig1$cluster), ]
+Th <- Th %>%
+  group_by(sample_id, cluster) %>%
+  mutate(total_counts = sum(counts)) %>%
+  ungroup() %>%
+  group_by(sample_id) %>%
+  mutate(cluster_sum = sum(counts)) %>%
+  ungroup() %>%
+  mutate(percentage = (counts / cluster_sum)) %>%
+  select(-total_counts, -cluster_sum)
+
+ILC <- Fig1[grepl("ILC", Fig1$cluster), ]
+ILC <- ILC %>%
+  group_by(sample_id, cluster) %>%
+  mutate(total_counts = sum(counts)) %>%
+  ungroup() %>%
+  group_by(sample_id) %>%
+  mutate(cluster_sum = sum(counts)) %>%
+  ungroup() %>%
+  mutate(percentage = (counts / cluster_sum)) %>%
+  select(-total_counts, -cluster_sum)
+gdT <- Fig1[grepl("gdT", Fig1$cluster), ]
+gdT <- gdT %>%
+  group_by(sample_id, cluster) %>%
+  mutate(total_counts = sum(counts)) %>%
+  ungroup() %>%
+  group_by(sample_id) %>%
+  mutate(cluster_sum = sum(counts)) %>%
+  ungroup() %>%
+  mutate(percentage = (counts / cluster_sum)) %>%
+  select(-total_counts, -cluster_sum)
+
+cd4_data <- Fig1 %>%
+  filter(cluster %in% c("Th1", "Th2", "Th17", "Treg","Unpolarized CD4 T Cells"))
+
+# Group by sample_id and summarize to create new total count and Freq for CD4 T Cells
+cd4_summarized <- cd4_data %>%
+  group_by(condition, timepoint, number, sample_id) %>%
+  summarize(
+    count = sum(count),
+    Freq = sum(Freq)
+  ) %>% mutate(cluster = "CD4 T Cells")
+```
+
+# Percentages
+```{r}
+pdf(paste0(path.out,format(Sys.Date(), "%Y%m%d"),"_","clusterpercentages.pdf"), onefile = TRUE, width = 5.333, height = 3)
+for(t in unique(Fig1$cluster)){
+  int <- Fig1 %>% dplyr::filter(cluster == t) #filter for measurements of the current type
+  
+  k <- int$cluster %>% unique() %>% length()
+  
+  # With the stat.test table we calculate the significance values, which we can later add to the plot.
+  # Watch out that the T-test can only be performed if there's n>1 measurement per condition.
+  stat.test <- int %>%
+    group_by("cluster", "timepoint") %>%
+    t_test(Freq ~ timepoint, ref.group = "H") %>%
+    add_significance("p")
+  stat.test
+  stat.test <- stat.test %>%
+    add_xy_position(x = "timepoint", dodge = 0.75, fun = "max", scales = "free", step.increase = 0)%>%
+    dplyr::filter(p != "NaN") %>% mutate("y.position" = y.position*1.05)
+  
+  p1 <-ggplot(int, aes(x = timepoint, y = Freq, interaction(timepoint)))+
+    geom_boxplot(color = "black", fill = Treatment, alpha = 0.5, width = 0.25, outlier.shape = NA)+
+    stat_summary(fun=median, geom="line", aes(group=1), color = "black")  + 
+    geom_point(color = Treatment, fill = Treatment,
+               position = position_jitter(width = 0.1), # Jitter points
+               alpha = 0.5, size = 2, shape = 16) +
+    scale_y_continuous(labels = percent, expand = expansion(mult = 0.1)) + # we expand the y-axis by 30% to leave space for significance , expand = expansion(mult = c(.05, .05))
+    stat_pvalue_manual(stat.test,  label = "p.signif", tip.length = 0.02, hide.ns = "p", remove.bracket = TRUE, size = 8)+
+    theme_bw()+
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.line = element_line(color = "black"),
+          panel.spacing = unit(0, "lines"),
+          strip.background = element_blank(),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(size =18 , face= "bold", color = "black"),
+          axis.text.y = element_text(size =18, color = "black"), #mac is 23
+          axis.title.y = element_text(size =20 , face= "bold", color = "black"),
+          legend.position = "none",
+          strip.text = element_text(size = 18, face = "bold"))+
+    labs(y = paste0("% of ", "LiveCD45"),title = t)
+  print(p1) #print plot (has to be specified in a for-loop)
+}
+dev.off()
+```
+# Counts
+```{r}
+pdf(paste0(path.out,format(Sys.Date(), "%Y%m%d"),"_","clustercounts.pdf"), onefile = TRUE, width = 5.333, height = 3)
+for(t in unique(Fig1$cluster)){
+  int <- Fig1 %>% dplyr::filter(cluster == t) #filter for measurements of the current type
+  
+  k <- int$cluster %>% unique() %>% length()
+  
+  # With the stat.test table we calculate the significance values, which we can later add to the plot.
+  # Watch out that the T-test can only be performed if there's n>1 measurement per condition.
+  stat.test <- int %>%
+    group_by("cluster", "timepoint") %>%
+    t_test(count ~ timepoint, ref.group = "H") %>%
+    #adjust_pvalue(method = "bonferroni") %>%
+    add_significance("p")
+  stat.test
+  stat.test <- stat.test %>%
+    add_xy_position(x = "timepoint", dodge = 0.75, fun = "max", scales = "free", step.increase = 0)%>%
+    dplyr::filter(p != "NaN") %>% mutate("y.position" = y.position*1.05)
+  
+  p1 <-ggplot(int, aes(x = timepoint, y = count, interaction(timepoint)))+
+    geom_boxplot(color = "black", fill = Treatment2, alpha = 0.5, width = 0.25, outlier.shape = NA)+
+    stat_summary(fun=median, geom="line", aes(group=1), color = "black")  + 
+    geom_point(color = Treatment2, fill = Treatment2,
+               position = position_jitter(width = 0.1), # Jitter points
+               alpha = 0.5, size = 2, shape = 16) +
+    scale_y_log10(expand = expansion(mult = 0.1))+
+    stat_pvalue_manual(stat.test,  label = "p.signif", tip.length = 0.02, hide.ns = "p", remove.bracket = TRUE, size = 8)+
+    theme_bw()+
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.line = element_line(color = "black"),
+          panel.spacing = unit(0, "lines"),
+          strip.background = element_blank(),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(size =18 , face= "bold", color = "black"),
+          axis.text.y = element_text(size =13, color = "black"),
+          axis.title.y = element_text(size =20 , face= "bold", color = "black"),
+          legend.position = "none",
+          strip.text = element_text(size = 18, face = "bold"))+
+   labs(y = "Count", title = t)
+  print(p1) #print plot (has to be specified in a for-loop)
+}
+dev.off()
+```
+
+# Save SCE object
+Finally, we save the clustered & merged SCE object in case we want to continue working with it later on.
+```{r save RDS}
+saveRDS(object = sce, file = paste0(path.files, "SCE_clustered_plotted.rds"))
+```
+
+# Session Info
+In the session info you find all the packages and their version that were used. This is helpful for other people that want to reproduce your code and for you if you want to cite a package.
+```{r}
+sessionInfo()
+```
+

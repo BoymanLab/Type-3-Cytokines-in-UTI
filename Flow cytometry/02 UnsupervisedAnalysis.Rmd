@@ -1,0 +1,282 @@
+---
+title: "Unsupervised Flow Data Analysis kinetics"
+author: "TheVeger"
+date: "14/07/2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+# Libraries
+```{r libs, message = FALSE}
+library(tidyverse)
+library(SingleCellExperiment)
+library(CATALYST)
+library(readxl)
+library(clustree)
+library(Rphenograph)
+library(MetBrewer)
+library(ggpubr)
+library(svglite)
+library(pals)
+library(FlowSOM)
+library(ConsensusClusterPlus)
+library(flowCore)
+library(ggrepel)
+library(scater)
+library(rasterpdf)
+library(cowplot)
+library(ComplexHeatmap)
+library(diffcyt) #quantification of single cell data
+library(rstatix)
+library(hexbin)
+library(ggrastr)
+```
+
+# Set paths
+```{r set paths, warning=FALSE}
+rm(list = ls())
+
+path.data <- "../Data/"
+path.files <- "../R_files/"
+path.out <- "../R_out/"
+
+H <- met.brewer("Kandinsky",n=20)[c(16)]
+d1 <- met.brewer("Archambault",n=7)[c(3)]
+d3 <- met.brewer("Kandinsky",n=20)[c(2)]
+d7 <- met.brewer("Kandinsky",n=20)[c(7)]
+d14 <- met.brewer("Archambault",n=7)[c(4)]
+d21 <- met.brewer("Archambault",n=7)[c(5)]
+d28 <- met.brewer("Archambault",n=20)[c(2)]
+colvec <- c(H, d1, d3, d7, d14, d21, d28)
+source("flow_functions.R")
+```
+
+# Prepare SCE
+## Import SCE object
+Import SCE object that we have saved previously.
+```{r load and coldata}
+sce <- readRDS(file = paste0(path.files, "01_SCE.rds"))
+```
+
+# Add marker_classes to rowdata
+```{r rowdata}
+rownames(sce) 
+lineage_markers <- c("CD11c", "TCRb chain", "CD4", "gdTCR","F4_80", "CD90.2", "CD11b", "CD127", "MHC-II", "Ly-6C", "Ly-6G", "CD19", "NK1.1", "CD8") #lineage markers used for clustering
+
+rowData(sce)[rowData(sce)$marker_name %in% lineage_markers, "marker_class"] <- "type"
+rowData(sce)[!rowData(sce)$marker_name %in% lineage_markers, "marker_class"] <- "state"
+rowData(sce)[rowData(sce)$marker_name %in% c("Live_Dead","CD45"), "marker_class"] <- "none" 
+
+type_markers(sce)
+state_markers(sce)
+```
+
+# Exploratory Data Analysis
+```{r Health check}
+set.seed(1234)
+# use cells= ">total amount of cells" if you want to use all cells
+sce <- run_DR(sce, dr = "UMAP", markers = type_markers(sce), cells=10000000, scale = TRUE)
+plotDR(sce, "UMAP", color_by = "timepoint")+
+   scale_fill_manual(values = colvec)+
+  scale_color_manual(values = colvec)
+plotDR(sce, "UMAP", color_by = c(type_markers(sce)), ncol = round(sqrt(16*length(c(type_markers(sce)))/9)))
+plotDR(sce, "UMAP", color_by = c(state_markers(sce)), ncol = round(sqrt(16*length(c(state_markers(sce)))/9)))
+```
+# Primary 
+## flowsom clustering
+Here, we perform the primary clustering and dimensionality reduction (UMAP). The "cluster" function of CATALYST runs a FlowSOM clustering followed by a Consensus Meta clustering which is a standard clustering method and performs clusterings very rapidly.
+```{r primary clustering}
+kinit <- 30 #try 10 or 20
+
+sce <- flowsom(sce, markers = type_markers(sce), maxK = kinit, scale = TRUE, seed = 1234) 
+plot_DR(sce, color_by = "flowsom")
+plot_DR(sce, color_by = type_markers(sce))
+
+#Check the validity of the cluster: If your density plots show bimodal distributions, you may be underclustering.
+plotClusterExprs(sce, k = paste0("meta", kinit), features = "type") + labs(title = "primary clustering marker expression histogram")
+
+#If all density plots show one peak, it is valid to look at the heatmap. Else, this will hide information.
+plotExprHeatmap(sce, features = "type",
+    by = "cluster_id", k = paste0("meta", kinit),
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+saveRDS(object = sce, file = paste0(path.files, "01_SCE_flowsom.rds"))
+#save SCE in between steps to continue at different steps of the script.
+sce <- readRDS(file = paste0(path.files, "01_SCE_flowsom.rds"))
+```
+
+## Merge primary clustering
+Label and merge clusters
+```{r merge primary clusters}
+(merging_table <- read_excel(paste0(path.files, "merged_clusters_primary.xlsx")))
+merging_table <- merging_table[,1:2]
+
+
+sce <- mergeClusters(sce, k = paste0("meta", kinit), table = merging_table, id = "primary", overwrite = TRUE)
+
+# Add merged cluster ids to colData
+code <- cluster_codes(sce)[,c("som100", "primary")]
+coldata <- as.data.frame(colData(sce))
+coldata <- merge(coldata, code, by.x = "cluster_id", by.y = "som100")
+colData(sce) <- DataFrame(coldata[order(coldata$cell_id),])
+
+
+p1 <- plot_DR(sce, "UMAP", color_by = "primary")+
+  theme(legend.text = element_text(size=14),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title = element_blank(),
+        axis.line = element_blank(),
+        panel.grid = element_blank(),
+        legend.title = element_text(size=18, face = "bold"))
+
+pdf(paste0(path.out, "2a_merged_clustering.pdf"), height = 9, width = 11, onefile = TRUE)
+p1
+features <- plot_DR(sce, "UMAP", color_by = type_markers(sce), ncol = 5)+
+  theme(strip.text = element_text(size=18),
+        panel.grid = element_blank(),
+        strip.background = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        legend.text =   element_text(size=14),
+        legend.title = element_text(size=18, face = "bold"))
+plotExprHeatmap(sce, features = "type",
+    by = "cluster_id", k = "primary",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+dev.off()
+
+```
+# Save primary SCE object
+```{r save RDS}
+saveRDS(object = sce, file = paste0(path.files, "SCE_primary_clustered.rds"))
+```
+
+# Secondary clustering on T-like lymphocytes
+```{r}
+sce <- readRDS(file = paste0(path.files, "SCE_primary_clustered.rds"))
+sce <- filterSCE(sce, primary %in% c("abT Cells",  "gdT Cells", "ILCs")) #filter for secondary clustering
+sce$cluster_id
+#lineage markers used for secondary clustering
+lineage_markers <- c("TCRb chain", "CD4", "gdTCR", "CD90.2", "CD127","RORgt", "CD8", "GATA3", "FOXP3", "CD25", "CD122", "T-bet") 
+
+rowData(sce)[rowData(sce)$marker_name %in% lineage_markers, "marker_class"] <- "type"
+rowData(sce)[!rowData(sce)$marker_name %in% lineage_markers, "marker_class"] <- "none"
+type_markers(sce)
+sce <- run_DR(sce, dr = "UMAP", markers = type_markers(sce), cells = 10000000, scale = TRUE)
+sce <- phenograph(sce, markers = type_markers(sce), assay = "exprs", k = 11, scale = TRUE) #lower k is more clusters
+
+ggsave(file=paste0(path.out,"Secondary_clustering.pdf"), plot=
+         plot_DR(sce, color_by = "pheno", add_labels = TRUE),
+       width=11, height=9)
+ggsave(file=paste0(path.out,"Secondary_clustering_features.pdf"), plot=
+         plot_DR(sce, color_by = type_markers(sce)), 
+       width=11, height=9)
+
+
+cluster_codes(sce) #code for the clusters
+pdf(paste0(path.out, "Secondary_clustering_heatmap.pdf"), height = 9, width = 11, onefile = TRUE)
+plotExprHeatmap(sce, features = "type", #plot heatmap for Pheno clustering
+    by = "cluster_id", k = "custom",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+
+plotClusterExprs(sce, k = "custom", features = "type") + labs(title = "secondary clustering marker expression histogram")
+dev.off()
+```
+
+#Merging secondary clustering
+```{r}
+(merging_table <- read_excel(paste0(path.files, "merged_clusters_secondaryT.xlsx")))
+merging_table <- merging_table[,1:2]                   
+
+sce <- mergeClusters(sce, k = "custom", table = merging_table, id = "secondary", overwrite = TRUE)
+
+# Add merged cluster ids to colData
+code <- cluster_codes(sce)[,c("custom", "secondary")]
+coldata <- as.data.frame(colData(sce))
+coldata <- merge(coldata, code, by.x = "pheno", by.y = "custom")
+colData(sce) <- DataFrame(coldata[order(coldata$cell_id),])
+
+saveRDS(object = sce, file = paste0(path.files, "SCE_secondaryT_clustered.rds"))
+sce <- readRDS(file = paste0(path.files, "SCE_secondaryT_clustered.rds"))
+
+p1 <- plot_DR(sce, "UMAP", color_by = "secondary")+
+  theme(legend.text = element_text(size=14),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title = element_blank(),
+        axis.line = element_blank(),
+        panel.grid = element_blank(),
+        legend.title = element_text(size=18, face = "bold"))
+
+pdf(paste0(path.out, "merged_secondaryT.pdf"), height = 9, width = 11, onefile = TRUE)
+p1
+plot_DR(sce, "UMAP", color_by = type_markers(sce), ncol = 4)+
+         theme(strip.text = element_text(size=18),
+               panel.grid = element_blank(),
+               strip.background = element_blank(),
+               axis.title = element_blank(),
+               axis.text = element_blank(),
+               legend.text =   element_text(size=14),
+               legend.title = element_text(size=18, face = "bold"))
+plotExprHeatmap(sce, features = "type",
+    by = "cluster_id", k = "secondary",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+dev.off()
+```
+
+
+# Merging the primary and secondary clustering
+```{r}
+sce_prim <- readRDS(file = paste0(path.files, "SCE_primary_clustered.rds"))
+sce_secT <- readRDS(file = paste0(path.files, "SCE_secondaryT_clustered.rds"))
+
+prim_cluster_id <- as.data.frame(colData(sce_prim)[,c("cell_id", "primary")]) %>% 
+  dplyr::rename(cluster = primary)
+Lymcell_cluster_id <- as.data.frame(colData(sce_secT)[,c("cell_id", "secondary")]) %>% 
+  dplyr::rename(cluster = secondary)
+subcluster_id <- prim_cluster_id %>%
+  full_join(Lymcell_cluster_id, by = "cell_id") %>% 
+  mutate(cluster.x = as.character(cluster.x)) %>% 
+  mutate(cluster.y = as.character(cluster.y)) %>% 
+  mutate(cluster = ifelse(is.na(cluster.y), cluster.x, cluster.y)) %>%
+  # Drop the unnecessary columns
+  select(-cluster.y) %>% 
+  dplyr::rename(original = cluster.x)
+
+coldata <- data.frame(colData(sce_prim)) %>% dplyr::select(-c("flowsom", "primary"))
+me <- merge(coldata, subcluster_id, by = c("cell_id"), all = TRUE)
+me$cluster <- factor(me$cluster)
+colData(sce_prim) <- DataFrame(me)
+metadata(sce_prim)$cluster_codes <- data.frame(
+    custom = factor(levels(me$cluster_id), levels = levels(me$cluster_id)))
+
+saveRDS(object = sce_prim, file = paste0(path.files, "SCE_all_merged.rds"))
+sce <- readRDS(file = paste0(path.files, "SCE_all_merged.rds"))
+p1 <- plot_DR(sce, "UMAP", color_by = "cluster")+
+  theme(legend.text = element_text(size=14),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title = element_blank(),
+        axis.line = element_blank(),
+        panel.grid = element_blank(),
+        legend.title = element_text(size=18, face = "bold"))+
+  guides(color = guide_legend(ncol = 1, override.aes = list(size = 3)))
+
+pdf(paste0(path.out, "all_clustering_combined.pdf"), height = 6, width = 9, onefile = TRUE)
+p1
+dev.off()
+
+```
+
+```{r save RDS}
+saveRDS(object = sce_prim, file = paste0(path.files, "SCE_all_merged.rds"))
+```
+
+# Session Info
+In the session info you find all the packages and their version that were used. This is helpful for other people that want to reproduce your code and for you if you want to cite a package.
+```{r}
+sessionInfo()
+```
+
