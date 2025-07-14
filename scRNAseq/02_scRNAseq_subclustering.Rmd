@@ -1,0 +1,134 @@
+---
+title: "scRNAseq_subclustering"
+author: "TheVeger"
+date: "14/07/2025"
+output: 
+  pdf_document:
+    keep_tex: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+# Load Libraries
+```{r libs, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(cowplot)
+library(dplyr)
+library(data.table)
+library(pals)
+library(MetBrewer)
+library(ggpubr)
+library(flowCore)
+library(Rphenograph)
+library(FlowSOM)
+library(ConsensusClusterPlus)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(readxl)
+library(MetBrewer)
+library(ggrepel)
+library(MatrixGenerics)
+library(msigdbr)
+library(fgsea)
+library(ggpubr)
+library(xlsx)
+library(readr)
+library(clustree)
+```
+
+# Load Data
+```{r load data, message=FALSE}
+rm(list = ls())
+
+path.files <- "../R_files/"
+path.out <- "../R_out/Secondary/"
+
+UTI <- readRDS(file = paste0(path.files, "UTI_clustered_k35.rds"))
+
+colvec <- met.brewer("Kandinsky",n=20)[c(16,2,7)]
+DefaultAssay(UTI) <- "integrated.adt"
+
+#load functions
+source("scRNA_functions.R")
+```
+
+# Plots primary clustering
+```{r}
+pdf(paste0(path.out,format(Sys.Date(), "%Y%m%d"),"_","UMAP_Featureplot.pdf"), height = 4.7, width = (47/4), onefile = TRUE)
+protein_features <- c("CD3", "CD4","CD8a","gdTCR","CD90_2", "CD127", "MHC-II", "CD11b", "Ly_6G", "CD19")
+clusterplusfeature(x = UTI, protein.features = protein_features, cluster_column = "primary", dim = "umap.adt", assay.adt = "integrated.adt", ncol = 5)
+dev.off()
+
+# Density plot primary
+pdf(paste0(path.out,format(Sys.Date(), "%Y%m%d"),"_","Density plots.pdf"), height = 4.7, width = (47/4), onefile = TRUE)
+plot_DR(x = UTI, color_by = "condition", dim = "umap.adt")+ scale_color_manual(values = colvec)
+plot_density(x = UTI, dim  = "umap.adt", color_by = "condition", ncol =1)
+dev.off()
+```
+
+# Secondary clustering
+```{r}
+# Filter Dataset
+DefaultAssay(UTI)<- "integrated"
+CD90 <- UTI[,UTI@meta.data$primary %in% c("CD4 T Cells", "CD8 T Cells", "gdT Cells", "ILCs")]
+CD90 <- RunPCA(CD90)
+ElbowPlot(CD90)
+CD90 <- RunUMAP(CD90, reduction = "pca", dims = 1:15)
+CD90 <- FindNeighbors(CD90, dims = 1:15)
+CD90 <- FindClusters(CD90, resolution = 0.5) 
+CD90@meta.data[,"integrated_snn_res.0.5"] <- droplevels(CD90@meta.data[,"integrated_snn_res.0.5"])
+
+DimPlot(CD90, reduction = "umap")
+DimPlot(CD90, reduction = "umap", split.by = "condition")
+pdf(paste0(path.out,format(Sys.Date(), "%Y%m%d"),"_","SecondaryDensity.pdf"), height = 9, width = 4.1, onefile = TRUE)
+plot_density(x = CD90, dim  = "umap", color_by = "condition", ncol =1, bins = 20, xlim = c(-11, 11), ylim = c(-5,5))
+dev.off()
+```
+
+# cell labeling
+```{r}
+type3 <- c("Rorc", "Ccr6", "Il17f", "Il17a", "Il22", "Tbx21", "Cxcr3", "Ifng","Gata3","Ccr4", "Il4", "Foxp3", "Il23a")
+
+protein.features <- c("CD3","CD90_2", "CD127", "TCR_Bchain", "gdTCR", "CD4", "CD8a")
+pdf(paste0(path.out,format(Sys.Date(), "%Y%m%d"),"_","Secondary features.pdf"), height = 9, width = 8, onefile = TRUE)
+clusterplusfeature(x = CD90, protein.features = protein.features, rna.features = type3, cluster_column = "integrated_snn_res.0.5", dim = "umap", assay.adt = "integrated.adt", assay.rna = "integrated")
+dev.off()
+
+merging_table2 <- read_excel(paste0(path.files, "merged_clusters_secondary.xlsx"))
+
+CD90@meta.data$order <- 1:nrow(CD90@meta.data)
+coldata <- CD90@meta.data[c("order", "integrated_snn_res.0.5")]
+colnames(merging_table2) <- c("integrated_snn_res.0.5", "secondary")
+coldata <- merge(coldata, merging_table2)
+coldata <- coldata[order(coldata$order),]
+
+CD90@meta.data[,"secondary"] <- coldata[,"secondary"]
+CD90@meta.data[,"secondary"] <- factor(CD90@meta.data[,"secondary"])
+
+saveRDS(CD90, file = paste0(path.files, "UTI_secondary_clustered.rds"))
+CD90 <- readRDS(paste0(path.files,"UTI_secondary_clustered.rds"))
+pdf(paste0(path.out,format(Sys.Date(), "%Y%m%d"),"_","heatmap.pdf"), height = 4.7, width = 8.5, onefile = TRUE)
+clusterplusfeature(x = CD90, protein.features = protein.features, rna.features = type3, cluster_column = "secondary", dim = "umap", assay.adt = "integrated.adt", assay.rna = "integrated")
+dev.off()
+
+#variable features
+CD90 <- FindVariableFeatures(CD90, method = "vst", nfeatures = 2000, assay = "integrated")
+CD90 <- FindVariableFeatures(CD90, method = "vst", nfeatures = 134, assay = "integrated.adt")
+list <-VariableFeatures(CD90)
+top10 <- head(rownames(CD90), 10)
+
+#find variable features of specific clusters
+Idents(CD90) <- "seurat_clusters"
+cluster_markers <- FindMarkers(CD90, ident.1 = 3, min.pct = 0.25, logfc.threshold = 0.25)
+head(cluster_markers)
+top10 <- head(rownames(cluster_markers), 10)
+```
+
+# Save subclustered CD90
+```{r save rds}
+saveRDS(CD90, file = paste0(path.files, "UTI_secondary_clustered.rds"))
+```

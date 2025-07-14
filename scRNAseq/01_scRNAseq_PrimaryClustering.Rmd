@@ -1,0 +1,119 @@
+---
+title: "01_scRNAseq_PrimaryClustering"
+author: "TheVeger"
+date: "14/07/2025"
+output: 
+  pdf_document:
+    keep_tex: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+# Load Libraries
+```{r libs, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(umap)
+library(cowplot)
+library(dplyr)
+library(data.table)
+library(pals)
+library(MetBrewer)
+library(ggpubr)
+library(flowCore)
+library(Rphenograph)
+library(FlowSOM)
+library(ConsensusClusterPlus)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(readxl)
+library(MetBrewer)
+library(MatrixGenerics)
+library(ggrepel)
+library(clustree)
+library(rasterpdf)
+```
+
+# Load Data
+```{r load data, message=FALSE}
+rm(list = ls())
+
+path.files <- "../R_files/"
+path.out <- "../R_out/Primary/"
+path.data <- "../Data/"
+
+UTI <- readRDS(file = paste0(path.files, "20250714_UTI_CTRL-Day3-Day6_integrated.rds"))
+
+colvec <- met.brewer("Navajo",n=20)[c(20,16, 10, 6, 1)]
+DefaultAssay(UTI) <- "integrated.adt"
+
+source("scRNA_functions.R")
+```
+
+
+# Data exploration
+## Overview
+```{r data exploration, warning=FALSE, message=FALSE, fig.height=9, fig.width=16, eval=FALSE}
+pdf(paste0(path.out, "data_exploration.pdf"), height = 9, width = 16)
+DimPlot(UTI, reduction = 'umap.adt', label = TRUE, repel = TRUE, label.size = 5)
+DimPlot(UTI, reduction = 'umap.adt', label = TRUE, repel = TRUE, label.size = 2.5, split.by="condition")
+FeaturePlot(UTI, features = "nFeature_RNA", reduction = 'wnn.umap', cols = c("lightgrey","darkblue"))
+FeaturePlot(UTI, features = "nFeature_ADT", reduction = 'wnn.umap', cols = c("lightgrey","darkblue"))
+dev.off()
+```
+
+# Elbowplot
+```{r elbowplots and feature plots, warning=FALSE, message=FALSE, fig.height=9, fig.width=16}
+pdf(paste0(path.out, "PCA_Elbowplot.pdf"), height = 9, width = 16)
+ElbowPlot(UTI, reduction = "pca", ndims = 30)
+ElbowPlot(UTI, reduction = "pca.adt", ndims = 30)
+dev.off()
+```
+
+# Primary Clustering
+```{r primary clustering}
+# rename ADTs AB numbers to protein names
+ADTs <- read.csv(paste0(path.data,"TotalSeq_A_Mouse_Universal_Cocktail_V1_199901_Antibody_reference_UMI_counting.csv"))
+ADTs <- ADTs %>% 
+ separate(name, into = c("prescript", "name"), extra = "merge", fill = "right", remove = FALSE) %>% 
+  select(-prescript)
+ADTs["name"][ADTs["name"]=="I_A_I_E"] <-  "MHC-II"
+ADTs["name"][ADTs["name"]=="TCR_RD_GL3"] <-  "gdTCR"
+UTI <- RenameADTSeurat(obj = UTI)
+
+# define lineage markers
+# focused on general identification to allow for secondary clustering
+lineage_markers <- c("CD3", "CD19", "CD20","CD90_2", "FceRIa", "MHC-II", "CD127", "TCR_Bchain", "gdTCR", "Ly_6C", "CD11b", "CD11c", "Ly_6G", "CD64", "NK_1_1", "CD4", "CD8a") 
+state_markers <- c("CD366", "CD44", "CD103","CD62L", "CD27", "CD138" ,"CD45R_B220", "CD274", "CD357", "CD134", "CD137", "CD69", "XCR1", "CD163", "CD86") 
+
+#Run UMAP with lineage markers
+UTI <- RunUMAP(UTI,  features = lineage_markers, assay = "integrated.adt", reduction.name = "umap", reduction.key = "umap_") #gives penis UMAP, can't change seed
+DimPlot(UTI, reduction = "umap.adt")
+
+df.adt <- UTI@assays[["integrated.adt"]][] %>% as.data.frame() %>% .[all_of(lineage_markers),] %>% as.data.frame()
+
+pdf(paste0(path.out, "02_flowSOM_35.pdf"), height = 9, width = 16)
+UTI <- flowsom(x = UTI, pf = lineage_markers, assay.adt = "integrated.adt", maxK = 35)
+clusterplusfeature(UTI, protein.features = lineage_markers, cluster_column = "flowsom", dim = "umap.adt")
+dev.off()
+```
+
+# Primary Merging
+```{r primary merging}
+merging_table1 <- read_excel(paste0(path.files, "merged_clusters_primary.xlsx"))
+UTI <- merge_clusters(UTI, cluster_column = "flowsom", merging_table = merging_table1, merging_name = "primary")
+
+
+pdf(paste0(path.out, "merging.pdf"), height = 9, width = 16, onefile = TRUE)
+clusterplot <- clusterplusfeature(UTI, protein.features = lineage_markers, cluster_column = "primary", dim = "umap.adt", hml = FALSE, ncol = 6)
+clusthm(UTI, protein.features = lineage_markers, cluster_column = "primary") %>% print()
+dev.off()
+```
+
+## Save .rds file
+```{r save .rds}
+saveRDS(UTI, file = paste0(path.files, "UTI_clustered_k35.rds"))
+```

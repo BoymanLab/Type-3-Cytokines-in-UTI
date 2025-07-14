@@ -1,0 +1,319 @@
+---
+title: "03_scRNAseq_subcluster_analysis"
+author: "TheVeger"
+date: "2025/07/14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+# Libraries
+```{r, message=FALSE}
+library(tidyverse)
+library(Seurat)
+library(patchwork)
+library(FlowSOM)
+library(matrixStats)
+library(ConsensusClusterPlus)
+library(flowCore)
+library(clustree)
+library(cowplot)
+library(ggrepel)
+library(ggpubr)
+library(RColorBrewer)
+library(pals)
+library(scales)
+library(CATALYST)
+library(ComplexHeatmap)
+library(readxl)
+library(msigdbr)
+library(fgsea)
+library(monocle)
+library(MetBrewer)
+library(viridis)
+library(dittoSeq)
+library(Rphenograph)
+library(ggrastr)
+library(DelayedArray)
+library(DelayedMatrixStats)
+```
+
+# Set paths
+```{r}
+rm(list = ls())
+
+path.data <- "../Data/"
+path.files <- "../R_files/"
+path.out <- "../R_out/Downstream/"
+
+source("scRNA_functions.R")
+```
+
+
+# Read in Seurat object
+```{r}
+UTI <- readRDS(file = paste0(path.files, "UTI_clustered_k35.rds"))
+colvec <- met.brewer("Navajo",n=20)[c(20,16,4)]
+colvec <- met.brewer("Kandinsky",n=20)[c(16,2,7)]
+colbig <- met.brewer("Renoir",n=14)
+```
+
+# Differential gene expression
+# DGE on all cells
+```{r}
+UTI <- FindVariableFeatures(UTI, assay = "integrated")
+CTRL <- rownames(UTI@meta.data[UTI@meta.data$condition=="CTRL",])
+Day3 <- rownames(UTI@meta.data[UTI@meta.data$condition=="Day3",])
+Day6 <- rownames(UTI@meta.data[UTI@meta.data$condition=="Day6",])
+
+disease_markers_Day3 <- as.data.frame(FindMarkers(UTI, ident.1 = Day3, ident.2 = CTRL, assay = "integrated", logfc.threshold = 0))
+disease_markers_Day3[disease_markers_Day3$avg_log2FC > 0.5,]
+disease_markers_Day3 <-disease_markers_Day3 %>% dplyr::mutate("p_val" = p_val + 1e-300)
+
+disease_markers_Day6 <- as.data.frame(FindMarkers(UTI, ident.1 = Day6, ident.2 = CTRL, assay = "integrated", logfc.threshold = 0))
+disease_markers_Day6[disease_markers_Day6$avg_log2FC > 0.5,]
+disease_markers_Day6 <-disease_markers_Day6 %>% dplyr::mutate("p_val" = p_val + 1e-300)
+
+plot_volcano(disease_markers_Day3)+ labs(title = "Day3 p.i.")
+plot_volcano(disease_markers_Day6)+ labs(title = "Day6 p.i.")
+
+pdf(paste0(path.out, "Volcanoplot.pdf"), height = 6, width = 10, onefile = TRUE)
+plot_volcano(disease_markers_Day3, labels = c("Il17f", "Il22", "Il1b", "Cxcl2", "Il2rb", "Gzmb", "Cd44", "Il17a", "Csf3r", "Csf1", "Il23a", "S100a8", "S100a9"))+ labs(title = "Day3 p.i.")+
+  theme(panel.grid = element_blank(),
+        legend.text = element_text(size=14),
+        axis.text.x = element_text(size =12),
+        axis.text.y = element_text(size =12),
+        axis.title.x = element_text(size = 16, face = "bold"),
+        axis.title.y = element_text(size = 16, face = "bold"),
+        legend.title = element_text(size=18, face = "bold"), 
+        title = element_text(size = 18, face = "bold"))
+plot_volcano(disease_markers_Day6, labels = c("Il22", "Il1b", "Cxcl3", "Cxcl2", "Cxcr6", "Ctla4", "Il2ra", "Csf2rb", "Csf3r"))+ labs(title = "Day6 p.i.")+
+  theme(panel.grid = element_blank(),
+        legend.text = element_text(size=14),
+        axis.text.x = element_text(size =12),
+        axis.text.y = element_text(size =12),
+        axis.title.x = element_text(size = 16, face = "bold"),
+        axis.title.y = element_text(size = 16, face = "bold"),
+        legend.title = element_text(size=18, face = "bold"), 
+        title = element_text(size = 18, face = "bold"))
+dev.off()
+```
+
+# Geneset enrichment analysis leukocytes
+```{r}
+# Geneset enrichment analysis day 3
+hallmarks<- msigdbr(species = "Mus musculus", category = "H")
+hallmarkout<- run_fgsea(disease_markers_Day3, gene_set = hallmarks) %>%
+  arrange(NES)
+colors <- ifelse(hallmarkout$NES >= 0, "darkred", "blue2")
+sizes <- abs(hallmarkout$NES) + 1.5
+
+ggplot(hallmarkout, aes(x = NES, y = reorder(pathway, +NES))) +
+  geom_point(aes(color = colors), size = sizes) +
+  scale_color_identity() +
+  xlab("NES score") +
+  ylab("") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_x_continuous(limits = c(-2, 2.5), breaks = seq(-2, 2, by = 1))
+
+pdf(paste0(path.out, "Leukocytesday3.pdf"), height = 6, width = 8, onefile = TRUE)
+plot_fgsea(dge = disease_markers_Day3, gene_set = hallmarks, top_n = 2)
+pathways <- c("HALLMARK_TNFA_SIGNALING_VIA_NFKB", "HALLMARK_IL6_JAK_STAT3_SIGNALING", "HALLMARK_INFLAMMATORY_RESPONSE", "HALLMARK_INTERFERON_ALPHA_RESPONSE", "HALLMARK_COMPLEMENT", "HALLMARK_INTERFERON_GAMMA_RESPONSE")
+gsea_barplot(hallmarkout, pathways = pathways)+
+  theme(axis.text.x = element_text(size = 12),# I've added some text size changes
+            axis.text.y = element_text(size = 12, face = "bold"),
+            axis.title.x = element_text(size = 16))
+dev.off()
+
+# Geneset enrichment analysis day 6
+hallmarks<- msigdbr(species = "Mus musculus", category = "H")
+hallmarkout<- run_fgsea(disease_markers_Day6, gene_set = hallmarks) %>%
+  arrange(NES)
+colors <- ifelse(hallmarkout$NES >= 0, "darkred", "blue2")
+sizes <- abs(hallmarkout$NES) + 1.5
+
+ggplot(hallmarkout, aes(x = NES, y = reorder(pathway, +NES))) +
+  geom_point(aes(color = colors), size = sizes) +
+  scale_color_identity() +
+  xlab("NES score") +
+  ylab("") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_x_continuous(limits = c(-2, 2), breaks = seq(-2, 2, by = 1))
+
+pdf(paste0(path.out, "Leukocytes_day6.pdf"), height = 9, width = 11, onefile = TRUE)
+plot_fgsea(dge = disease_markers_Day6, gene_set = hallmarks, top_n = 2)
+gsea_barplot(hallmarkout, top_n = 2)+
+  theme(axis.text.x = element_text(size = 12),# I've added some text size changes
+            axis.text.y = element_text(size = 12, face = "bold"),
+            axis.title.x = element_text(size = 16))
+dev.off()
+```
+
+# DGE on CD90+ cells
+```{r}
+CD90 <- readRDS(CD90, file = paste0(path.files, "UTI_secondary_clustered.rds"))
+CD90 <- CD90[,CD90@meta.data$primary %in% c("CD4 T Cells", "gdT Cells", "ILCs")]
+CTRL <- rownames(CD90@meta.data[CD90@meta.data$condition=="CTRL",])
+Day3 <- rownames(CD90@meta.data[CD90@meta.data$condition=="Day3",])
+Day6 <- rownames(CD90@meta.data[CD90@meta.data$condition=="Day6",])
+
+T_disease_markers_Day3 <- as.data.frame(FindMarkers(CD90, ident.1 = Day3, ident.2 = CTRL, assay = "integrated", logfc.threshold = 0))
+T_disease_markers_Day3[T_disease_markers_Day3$avg_log2FC > 0.05,]
+
+T_disease_markers_Day6 <- as.data.frame(FindMarkers(CD90, ident.1 = Day6, ident.2 = CTRL, assay = "integrated", logfc.threshold = 0))
+T_disease_markers_Day6[T_disease_markers_Day6$avg_log2FC > 0.05,]
+
+pdf(paste0(path.out, "Volcanoplot_CD90+.pdf"), height = 6, width = 10, onefile = TRUE)
+plot_volcano(T_disease_markers_Day3, labels = c("Il17f", "Il22", "Il1b", "Cxcl2", "Il2rb", "Gzmb", "Cd44", "Il17a", "Csf3r", "Csf1", "Il23a", "S100a8", "S100a9"))+ labs(title = "Day 3 p.i. CD90+ cells")+
+  theme(panel.grid = element_blank(),
+        legend.text = element_text(size=14),
+        axis.text.x = element_text(size =12),
+        axis.text.y = element_text(size =12),
+        axis.title.x = element_text(size = 16, face = "bold"),
+        axis.title.y = element_text(size = 16, face = "bold"),
+        legend.title = element_text(size=18, face = "bold"), 
+        title = element_text(size = 18, face = "bold"))
+plot_volcano(T_disease_markers_Day6, ylims = c(0,50), labels = c("Il17f", "Il22", "Rorc", "Il17a", "Il1r1"))+ labs(title = "Day6 p.i. CD90+ cells")+
+  theme(panel.grid = element_blank(),
+        legend.text = element_text(size=14),
+        axis.text.x = element_text(size =12),
+        axis.text.y = element_text(size =12),
+        axis.title.x = element_text(size = 16, face = "bold"),
+        axis.title.y = element_text(size = 16, face = "bold"),
+        legend.title = element_text(size=18, face = "bold"), 
+        title = element_text(size = 18, face = "bold"))
+dev.off()
+```
+
+# Violin plots
+```{r}
+my_comparisons <- list( c("CTRL", "day3"), c("CTRL", "day6"))
+pdf(paste0(path.out, "ViolinPlots_CD90+.pdf"), height = 6, width = 10, onefile = TRUE)
+VlnPlot(CD90,assay = "RNA", features = c("Il4, Ifng, Il22, Il17a, Il17f"), group.by = "condition", y.max = 2.6, cols = colvec) +
+  stat_compare_means(comparisons = list(c("CTRL", "Day3"),c("CTRL", "Day6")), label = "p.signif")+
+  labs(title="Cytokines on cytokine producers")
+
+VlnPlot(CD90,assay = "RNA", features = c("Gata3","Tbx21", "Rorc"), group.by = "condition", y.max = 4, cols = colvec) +
+  stat_compare_means(comparisons = list(c("CTRL", "Day3"),c("CTRL", "Day6")), label = "p.signif")
+dev.off()
+```
+
+# Dotplot and heatmap
+```{r}
+# TF + chemokine receptor set
+rna_state <- c("Ccr6", "Rorc", "Ccr4", "Gata3", "Cxcr3", "Tbx21")
+CD90 <- CD90[,CD90@meta.data$primary %in% c("CD4 T Cells", "gdT Cells", "ILCs")]
+metadata <- CD90@meta.data
+# Change the primary column to a factor with the specified levels
+metadata$primary <- factor(metadata$primary, levels = c("ILCs", "gdT Cells", "CD4 T Cells"))
+metadata$Sample <- factor(metadata$Sample, levels = c("CTRL", "Day3", "Day6"))
+# Update the Seurat object with the modified metadata
+CD90@meta.data <- metadata
+pdf(paste0(path.out, "Dotplot.pdf"), height = 20, width = 16, onefile = TRUE)
+p1 <- PlotDot(x= CD90, split_by = "condition")+
+  theme(legend.text = element_text(size=18, face = "bold"),
+        axis.text.x = element_text(size =16),
+        axis.text.y = element_text(size =18, face = "bold"),
+        legend.title = element_text(size=18, face = "bold"),
+        strip.text = element_text(size = 18, face = "bold"))
+dev.off()
+### Heatmap
+# Ensure your Seurat object is normalized and scaled
+DefaultAssay(CD90) <- "integrated"
+
+# cytokine set
+rna_state <- c("Il1a", "Il1b", "Il1rn", "Il1r1", "Il1r2", "Il1rl1","Il2ra","Il2rb", "Il15ra", "Il4", "Il5ra", "Il6", "Il6ra", "Il7r", "Il10", "Il12a", "Il12b", "Il12rb1", "Il12rb2", "Il1f9", "Il17a", "Il17f", "Il17re", "Il18bp", "Il18r1", "Il21r", "Il22", "Il23a", "Il23r", "Il27", "Ifng")
+
+# Extract the expression matrix for the genes in rna.features
+data_matrix <- GetAssayData(CD90, slot = "scale.data")[rna_state, ]
+
+# Define the desired orders for primary and conditions
+primary_order <- c("ILCs", "gdT Cells", "CD4 T Cells")
+condition_order <- c("CTRL", "Day3", "Day6")
+
+# Add cluster and condition information as combined metadata
+CD90@meta.data$Cluster_Condition <- paste(
+  CD90@meta.data$primary,
+  CD90@meta.data$Sample,
+  sep = "_"
+)
+
+# Update the primary column to reflect the desired order
+CD90@meta.data$primary <- factor(
+  CD90@meta.data$primary,
+  levels = primary_order
+)
+
+# Update the Cluster_Condition column to reflect the correct order
+CD90@meta.data$Cluster_Condition <- factor(
+  CD90@meta.data$Cluster_Condition,
+  levels = unlist(lapply(primary_order, function(cluster) {
+    paste(cluster, condition_order, sep = "_")
+  }))
+)
+
+# Remove any NA levels from Cluster_Condition
+CD90@meta.data$Cluster_Condition <- droplevels(CD90@meta.data$Cluster_Condition)
+
+# Re-aggregate the matrix with the ordered conditions and primary clusters
+aggregated_matrix <- as.data.frame(data_matrix) %>%
+  rownames_to_column(var = "Gene") %>%
+  pivot_longer(-Gene, names_to = "Cell", values_to = "Expression") %>%
+  left_join(CD90@meta.data %>% rownames_to_column(var = "Cell"), by = "Cell") %>%
+  group_by(Gene, Cluster_Condition) %>%
+  summarise(MeanExpression = mean(Expression, na.rm = TRUE)) %>%
+  pivot_wider(names_from = Cluster_Condition, values_from = MeanExpression) %>%
+  column_to_rownames(var = "Gene")
+
+# Check if the levels and columns are consistent
+print(levels(CD90@meta.data$Cluster_Condition))
+print(levels(CD90@meta.data$primary))
+print(colnames(aggregated_matrix))
+
+# Generate the heatmap with the correctly ordered primary clusters and conditions
+p2 <- Heatmap(
+  as.matrix(aggregated_matrix),
+  name = "Expression",
+  column_split = gsub("_.*", "", colnames(aggregated_matrix)),  # Split columns by primary clusters
+  column_order = colnames(aggregated_matrix),                  # Ensure the correct order
+  show_column_names = TRUE,
+  show_row_names = TRUE,
+  row_names_gp = gpar(fontsize = 10),
+  column_names_gp = gpar(fontsize = 10),
+  heatmap_legend_param = list(title = "Expression"),
+  col = viridis(100)
+)
+p2
+pdf(paste0(path.out,format(Sys.Date(), "%Y%m%d"),"_", "Heatmap_cytokines.pdf"), height = 26, width = 12, onefile = TRUE)
+print(p1)
+print(p2)
+dev.off()
+```
+
+
+# Ridgeplots
+```{r}
+# convert to SCE objects
+sce <- as.SingleCellExperiment(CD90, assay = c("integrated"))
+sce <- filterSCE(sce, primary %in% c("CD4 T Cells", "ILCs", "gdT Cells"))
+genes <- as.data.frame(UTI@assays[["integrated"]]@data@Dimnames[[1]])
+
+pdf(paste0(path.out, "Ridgeplots.pdf"), height = 3, width = 5, onefile = TRUE)
+dittoRidgePlot(sce, "Ifng", group.by = "primary", split.by = "Sample", ridgeplot.lineweight = 0.5)
+dittoRidgePlot(sce, "Tbx21", group.by = "primary", split.by = "Sample", ridgeplot.lineweight = 0.5)
+dittoRidgePlot(sce, "Gata3", group.by = "primary", split.by = "Sample", ridgeplot.lineweight = 0.5)
+dittoRidgePlot(sce, "Il4", group.by = "primary", split.by = "Sample", ridgeplot.lineweight = 0.5)
+dittoRidgePlot(sce, "Rorc", group.by = "primary", split.by = "Sample", ridgeplot.lineweight = 0.5)
+dittoRidgePlot(sce, "Il17a", group.by = "primary", split.by = "Sample", ridgeplot.lineweight = 0.5)
+dittoRidgePlot(sce, "Il17f", group.by = "primary", split.by = "Sample", ridgeplot.lineweight = 0.5)
+dittoRidgePlot(sce, "Il22", group.by = "primary", split.by = "Sample", ridgeplot.lineweight = 0.5)
+dev.off()
+```
+
+```{r}
+sessionInfo()
+```
